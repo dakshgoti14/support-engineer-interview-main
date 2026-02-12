@@ -4,7 +4,7 @@ A secure, production-grade banking application with comprehensive testing, enter
 
 ## ✅ Project Status
 
-**All 23 reported bugs fixed** | **155 tests passing** | **78% code coverage** | **Production-ready**
+**All 23 reported bugs fixed** | **155 tests passing** 
 
 ## 📋 Documentation
 
