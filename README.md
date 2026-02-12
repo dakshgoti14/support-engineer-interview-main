@@ -46,16 +46,6 @@ npm run test:ui
 
 ## 🧪 Test Suite
 
-### Test Coverage Summary
-
-| Service | Tests | Coverage | Status |
-|---------|-------|----------|--------|
-| **ValidationService** | 65 | 100% | ✅ Perfect |
-| **EncryptionService** | 28 | 89% | ✅ Excellent |
-| **AccountService** | 33 | 89% | ✅ Excellent |
-| **AuthService** | 29 | 42% | ✅ Core tested |
-| **Overall** | **155** | **78.1%** | ✅ Production-ready |
-
 ### What's Tested
 
 **ValidationService** (65 tests)
