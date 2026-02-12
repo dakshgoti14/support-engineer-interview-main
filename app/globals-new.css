@@ -1,0 +1,226 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * Semantic Design Tokens
+ *
+ * Why semantic tokens:
+ * - Prevents white-on-white bugs
+ * - Single source of truth for colors
+ * - Easy theme switching
+ * - WCAG contrast compliance
+ * - Maintainable at scale
+ */
+
+@layer base {
+  :root {
+    /* Background Colors */
+    --color-bg-primary: 255 255 255; /* white */
+    --color-bg-secondary: 249 250 251; /* gray-50 */
+    --color-bg-tertiary: 243 244 246; /* gray-100 */
+
+    /* Surface Colors (for cards, modals) */
+    --color-surface-primary: 255 255 255; /* white */
+    --color-surface-secondary: 243 244 246; /* gray-100 */
+    --color-surface-tertiary: 229 231 235; /* gray-200 */
+
+    /* Text Colors */
+    --color-text-primary: 17 24 39; /* gray-900 */
+    --color-text-secondary: 55 65 81; /* gray-700 */
+    --color-text-muted: 107 114 128; /* gray-500 */
+    --color-text-inverse: 255 255 255; /* white */
+
+    /* Input Colors */
+    --color-input-bg: 255 255 255; /* white */
+    --color-input-text: 17 24 39; /* gray-900 */
+    --color-input-border: 209 213 219; /* gray-300 */
+    --color-input-placeholder: 156 163 175; /* gray-400 */
+    --color-input-focus-border: 59 130 246; /* blue-500 */
+
+    /* Border Colors */
+    --color-border-default: 229 231 235; /* gray-200 */
+    --color-border-muted: 243 244 246; /* gray-100 */
+
+    /* Status Colors */
+    --color-success: 34 197 94; /* green-500 */
+    --color-error: 239 68 68; /* red-500 */
+    --color-warning: 245 158 11; /* amber-500 */
+    --color-info: 59 130 246; /* blue-500 */
+  }
+
+  .dark {
+    /* Background Colors */
+    --color-bg-primary: 10 10 10; /* near-black */
+    --color-bg-secondary: 23 23 23; /* dark-gray */
+    --color-bg-tertiary: 38 38 38; /* lighter-dark */
+
+    /* Surface Colors */
+    --color-surface-primary: 23 23 23; /* dark-gray */
+    --color-surface-secondary: 38 38 38; /* lighter-dark */
+    --color-surface-tertiary: 55 65 81; /* gray-700 */
+
+    /* Text Colors */
+    --color-text-primary: 243 244 246; /* gray-100 */
+    --color-text-secondary: 209 213 219; /* gray-300 */
+    --color-text-muted: 156 163 175; /* gray-400 */
+    --color-text-inverse: 17 24 39; /* gray-900 */
+
+    /* Input Colors */
+    --color-input-bg: 31 41 55; /* gray-800 */
+    --color-input-text: 243 244 246; /* gray-100 */
+    --color-input-border: 75 85 99; /* gray-600 */
+    --color-input-placeholder: 107 114 128; /* gray-500 */
+    --color-input-focus-border: 96 165 250; /* blue-400 */
+
+    /* Border Colors */
+    --color-border-default: 55 65 81; /* gray-700 */
+    --color-border-muted: 38 38 38; /* lighter-dark */
+
+    /* Status Colors (slightly adjusted for dark mode visibility) */
+    --color-success: 74 222 128; /* green-400 */
+    --color-error: 248 113 113; /* red-400 */
+    --color-warning: 251 191 36; /* amber-400 */
+    --color-info: 96 165 250; /* blue-400 */
+  }
+
+  /* Apply semantic tokens to elements */
+  body {
+    background-color: rgb(var(--color-bg-primary));
+    color: rgb(var(--color-text-primary));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* Input Styling with Semantic Tokens */
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="tel"],
+  input[type="date"],
+  input[type="number"],
+  select,
+  textarea {
+    background-color: rgb(var(--color-input-bg)) !important;
+    color: rgb(var(--color-input-text)) !important;
+    border-color: rgb(var(--color-input-border)) !important;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--color-input-placeholder)) !important;
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    border-color: rgb(var(--color-input-focus-border)) !important;
+    outline: none;
+    ring: 2px solid rgb(var(--color-input-focus-border) / 0.2);
+  }
+
+  /* Disabled state with proper contrast */
+  input:disabled,
+  select:disabled,
+  textarea:disabled,
+  button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  /* Error state */
+  input[aria-invalid="true"],
+  select[aria-invalid="true"],
+  textarea[aria-invalid="true"] {
+    border-color: rgb(var(--color-error)) !important;
+  }
+}
+
+/**
+ * Utility Classes for Semantic Tokens
+ */
+@layer utilities {
+  /* Background utilities */
+  .bg-primary {
+    background-color: rgb(var(--color-bg-primary));
+  }
+  .bg-secondary {
+    background-color: rgb(var(--color-bg-secondary));
+  }
+  .bg-tertiary {
+    background-color: rgb(var(--color-bg-tertiary));
+  }
+
+  /* Surface utilities */
+  .bg-surface {
+    background-color: rgb(var(--color-surface-primary));
+  }
+  .bg-surface-secondary {
+    background-color: rgb(var(--color-surface-secondary));
+  }
+  .bg-surface-tertiary {
+    background-color: rgb(var(--color-surface-tertiary));
+  }
+
+  /* Text utilities */
+  .text-primary {
+    color: rgb(var(--color-text-primary));
+  }
+  .text-secondary {
+    color: rgb(var(--color-text-secondary));
+  }
+  .text-muted {
+    color: rgb(var(--color-text-muted));
+  }
+  .text-inverse {
+    color: rgb(var(--color-text-inverse));
+  }
+
+  /* Border utilities */
+  .border-default {
+    border-color: rgb(var(--color-border-default));
+  }
+  .border-muted {
+    border-color: rgb(var(--color-border-muted));
+  }
+
+  /* Status utilities */
+  .text-success {
+    color: rgb(var(--color-success));
+  }
+  .text-error {
+    color: rgb(var(--color-error));
+  }
+  .text-warning {
+    color: rgb(var(--color-warning));
+  }
+  .text-info {
+    color: rgb(var(--color-info));
+  }
+
+  .bg-success {
+    background-color: rgb(var(--color-success));
+  }
+  .bg-error {
+    background-color: rgb(var(--color-error));
+  }
+  .bg-warning {
+    background-color: rgb(var(--color-warning));
+  }
+  .bg-info {
+    background-color: rgb(var(--color-info));
+  }
+}
+
+/**
+ * Smooth theme transitions
+ */
+* {
+  transition-property: background-color, border-color, color;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Prevent transition on page load */
+.no-transition {
+  transition: none !important;
+}
