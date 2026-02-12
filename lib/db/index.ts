@@ -4,34 +4,60 @@ import * as schema from "./schema";
 
 const dbPath = "bank.db";
 
-const sqlite = new Database(dbPath);
+// HMR-safe singleton: reuse connection across hot reloads in development
+const globalForDb = globalThis as unknown as {
+  _sqlite?: Database.Database;
+  _db?: ReturnType<typeof drizzle>;
+};
 
-// Enable WAL mode for better concurrency
-sqlite.pragma("journal_mode = WAL");
+function createConnection() {
+  if (globalForDb._sqlite && globalForDb._db) {
+    return { sqlite: globalForDb._sqlite, db: globalForDb._db };
+  }
 
-// Set reasonable timeout for busy database
-sqlite.pragma("busy_timeout = 5000");
+  const sqlite = new Database(dbPath);
 
-export const db = drizzle(sqlite, { schema });
+  // Enable WAL mode for better concurrency
+  sqlite.pragma("journal_mode = WAL");
+
+  // Set reasonable timeout for busy database
+  sqlite.pragma("busy_timeout = 5000");
+
+  const db = drizzle(sqlite, { schema });
+
+  // Cache for HMR reuse
+  globalForDb._sqlite = sqlite;
+  globalForDb._db = db;
+
+  return { sqlite, db };
+}
+
+const { sqlite, db: dbInstance } = createConnection();
+
+export const db = dbInstance;
 
 // Cleanup function to close database connection
 export function closeDb() {
-  sqlite.close();
+  if (globalForDb._sqlite) {
+    globalForDb._sqlite.close();
+    globalForDb._sqlite = undefined;
+    globalForDb._db = undefined;
+  }
 }
 
 // Handle process termination gracefully
 if (typeof process !== "undefined") {
-  process.on("beforeExit", () => {
-    sqlite.close();
-  });
+  const cleanup = () => {
+    closeDb();
+  };
 
+  process.on("beforeExit", cleanup);
   process.on("SIGINT", () => {
-    sqlite.close();
+    cleanup();
     process.exit(0);
   });
-
   process.on("SIGTERM", () => {
-    sqlite.close();
+    cleanup();
     process.exit(0);
   });
 }

@@ -5,14 +5,28 @@
  * Prevents duplication and ensures consistency
  */
 
-import { TRPCError } from "@trpc/server";
-
 export class ValidationService {
   private static readonly US_STATES = [
-    "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
-    "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
-    "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY",
+    "AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
+    "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","PR","RI","SC",
+    "SD","TN","TX","UT","VT","VA","VI","WA","WV","WI","WY",
   ];
+
+  private static readonly COMMON_TLD_TYPOS: Record<string, string> = {
+    ".con": ".com",
+    ".cmo": ".com",
+    ".ocm": ".com",
+    ".om": ".com",
+    ".cm": ".com",
+    ".ogr": ".org",
+    ".orgg": ".org",
+    ".nte": ".net",
+    ".nett": ".net",
+    ".edy": ".edu",
+    ".gmai.com": ".gmail.com",
+    ".gamil.com": ".gmail.com",
+    ".gmial.com": ".gmail.com",
+  };
 
   /**
    * Validate card number using Luhn algorithm
@@ -183,11 +197,28 @@ export class ValidationService {
 
   /**
    * Validate email format
+   * Checks for common TLD typos and normalizes to lowercase
    */
-  static validateEmail(email: string): { valid: boolean; normalized: string } {
+  static validateEmail(email: string): { valid: boolean; normalized: string; warning?: string } {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const normalized = email.toLowerCase().trim();
-    return { valid: emailRegex.test(normalized), normalized };
+
+    if (!emailRegex.test(normalized)) {
+      return { valid: false, normalized };
+    }
+
+    // Check for common TLD typos
+    for (const [typo, correction] of Object.entries(this.COMMON_TLD_TYPOS)) {
+      if (normalized.endsWith(typo)) {
+        return {
+          valid: false,
+          normalized,
+          warning: `Did you mean "${normalized.replace(new RegExp(typo.replace('.', '\\.') + '$'), correction)}"? "${typo}" appears to be a typo.`,
+        };
+      }
+    }
+
+    return { valid: true, normalized };
   }
 
   /**

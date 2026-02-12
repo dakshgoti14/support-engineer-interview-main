@@ -1,15 +1,15 @@
 import { z } from "zod";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import { TRPCError } from "@trpc/server";
 import { publicProcedure, router } from "../trpc";
 import { db } from "@/lib/db";
 import { users, sessions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import crypto from "crypto";
+import { AuthService } from "../services/authService";
+import { EncryptionService } from "../services/encryptionService";
+import { ValidationService } from "../services/validationService";
 
 const US_STATES = [
-  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY",
+  "AL","AK","AZ","AR","CA","CO","CT","DE","DC","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","PR","RI","SC","SD","TN","TX","UT","VT","VA","VI","WA","WV","WI","WY",
 ];
 
 export const authRouter = router({
@@ -19,13 +19,17 @@ export const authRouter = router({
         email: z.string().email().transform((s) => s.toLowerCase()),
         password: z
           .string()
-          .min(8, { message: "Password must be at least 8 characters" })
+          .min(12, { message: "Password must be at least 12 characters" })
           .refine((pwd) => /[A-Z]/.test(pwd), { message: "Password must contain at least one uppercase letter" })
           .refine((pwd) => /[a-z]/.test(pwd), { message: "Password must contain at least one lowercase letter" })
           .refine((pwd) => /\d/.test(pwd), { message: "Password must contain at least one number" })
           .refine((pwd) => /[!@#$%^&*(),.?":{}|<>]/.test(pwd), {
             message: "Password must contain at least one special character",
-          }),
+          })
+          .refine((pwd) => {
+            const commonPasswords = ["password", "12345678", "qwerty", "password123", "admin123"];
+            return !commonPasswords.some((common) => pwd.toLowerCase().includes(common));
+          }, { message: "Password is too common" }),
         firstName: z.string().min(1),
         lastName: z.string().min(1),
         phoneNumber: z.string().regex(/^\+?\d{10,15}$/),
@@ -33,23 +37,9 @@ export const authRouter = router({
           .string()
           .refine((s) => !Number.isNaN(Date.parse(s)), { message: "Invalid date format" })
           .refine((s) => {
-            const dob = new Date(s);
-            const now = new Date();
-            // Reject future dates
-            if (dob > now) return false;
-            // Reject dates more than 120 years ago (reasonable max age)
-            const maxAge = new Date();
-            maxAge.setFullYear(maxAge.getFullYear() - 120);
-            if (dob < maxAge) return false;
-            return true;
-          }, { message: "Date of birth cannot be in the future or more than 120 years ago" })
-          .refine((s) => {
-            const dob = new Date(s);
-            const now = new Date();
-            const ageMs = now.getTime() - dob.getTime();
-            const age = ageMs / (1000 * 60 * 60 * 24 * 365.25);
-            return age >= 18;
-          }, { message: "You must be at least 18 years old" }),
+            const result = ValidationService.validateDateOfBirth(s);
+            return result.valid;
+          }, { message: "You must be at least 18 years old and date must be valid" }),
         ssn: z.string().regex(/^\d{9}$/),
         address: z.string().min(1),
         city: z.string().min(1),
@@ -58,6 +48,15 @@ export const authRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // Validate email for common typos
+      const emailValidation = ValidationService.validateEmail(input.email);
+      if (!emailValidation.valid) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: emailValidation.warning || "Invalid email address",
+        });
+      }
+
       const existingUser = await db.select().from(users).where(eq(users.email, input.email)).get();
 
       if (existingUser) {
@@ -67,17 +66,16 @@ export const authRouter = router({
         });
       }
 
+      // Use AuthService for proper bcrypt rounds (12)
+      const hashedPassword = await AuthService.hashPassword(input.password);
 
-      const hashedPassword = await bcrypt.hash(input.password, 10);
-
-      // Hash SSN before storing (HMAC with a server-side secret)
-      const ssnSecret = process.env.SSN_SECRET || process.env.JWT_SECRET || "temporary-ssn-secret";
-      const ssnHash = crypto.createHmac("sha256", ssnSecret).update(input.ssn).digest("hex");
+      // Encrypt SSN using AES-256-GCM (not just hash - allows retrieval if needed)
+      const encryptedSsn = EncryptionService.encrypt(input.ssn);
 
       await db.insert(users).values({
         ...input,
         password: hashedPassword,
-        ssn: ssnHash,
+        ssn: encryptedSsn,
       });
 
       // Fetch the created user
@@ -90,13 +88,10 @@ export const authRouter = router({
         });
       }
 
-
       // Create session - invalidate previous sessions for this user (single session policy)
       await db.delete(sessions).where(eq(sessions.userId, user.id));
 
-      const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET || "temporary-secret-for-interview", {
-        expiresIn: "7d",
-      });
+      const token = AuthService.createSession(user.id);
 
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
@@ -115,11 +110,11 @@ export const authRouter = router({
       }
 
       // Don't expose password or SSN in response
-  const safeUser = { ...(user as Record<string, unknown>) };
-  delete (safeUser as Record<string, unknown>).password;
-  delete (safeUser as Record<string, unknown>).ssn;
+      const safeUser = { ...(user as Record<string, unknown>) };
+      delete (safeUser as Record<string, unknown>).password;
+      delete (safeUser as Record<string, unknown>).ssn;
 
-  return { user: safeUser, token };
+      return { user: safeUser, token };
     }),
 
   login: publicProcedure
@@ -130,31 +125,55 @@ export const authRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const user = await db.select().from(users).where(eq(users.email, input.email)).get();
+      const normalizedEmail = input.email.toLowerCase().trim();
+
+      // Check account lockout
+      const lockStatus = AuthService.isAccountLocked(normalizedEmail);
+      if (lockStatus.locked) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: `Account temporarily locked. Try again in ${lockStatus.remainingTime} seconds.`,
+        });
+      }
+
+      const user = await db.select().from(users).where(eq(users.email, normalizedEmail)).get();
 
       if (!user) {
+        AuthService.recordFailedLogin(normalizedEmail);
         throw new TRPCError({
           code: "UNAUTHORIZED",
           message: "Invalid credentials",
         });
       }
 
-      const validPassword = await bcrypt.compare(input.password, user.password);
+      const validPassword = await AuthService.verifyPassword(input.password, user.password);
 
       if (!validPassword) {
+        AuthService.recordFailedLogin(normalizedEmail);
+
+        const lockCheck = AuthService.isAccountLocked(normalizedEmail);
+        const remaining = lockCheck.locked ? 0 : Math.max(0, 2);
+
+        if (remaining > 0 && remaining <= 2) {
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: `Invalid credentials. ${remaining} attempts remaining before lockout.`,
+          });
+        }
+
         throw new TRPCError({
           code: "UNAUTHORIZED",
           message: "Invalid credentials",
         });
       }
 
+      // Successful login - reset failed attempts
+      AuthService.resetLoginAttempts(normalizedEmail);
 
       // Invalidate existing sessions to prevent multiple concurrent sessions
       await db.delete(sessions).where(eq(sessions.userId, user.id));
 
-      const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET || "temporary-secret-for-interview", {
-        expiresIn: "7d",
-      });
+      const token = AuthService.createSession(user.id);
 
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
@@ -171,30 +190,32 @@ export const authRouter = router({
         (ctx.res as Headers).set("Set-Cookie", `session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800`);
       }
 
-  const safeUser = { ...(user as Record<string, unknown>) };
-  delete (safeUser as Record<string, unknown>).password;
-  delete (safeUser as Record<string, unknown>).ssn;
-  return { user: safeUser, token };
+      const safeUser = { ...(user as Record<string, unknown>) };
+      delete (safeUser as Record<string, unknown>).password;
+      delete (safeUser as Record<string, unknown>).ssn;
+      return { user: safeUser, token };
     }),
 
   logout: publicProcedure.mutation(async ({ ctx }) => {
-    let sessionDeleted = false;
+    // Extract token from cookies regardless of auth state
+    let token: string | undefined;
+    if ("cookies" in ctx.req) {
+      const maybeReq = ctx.req as { cookies?: Record<string, string> };
+      token = maybeReq.cookies?.session;
+    } else {
+      const headers = ctx.req.headers as unknown as { get?: (k: string) => string | null; cookie?: string };
+      const cookieHeader = headers.get?.("cookie") || headers.cookie;
+      token = cookieHeader
+        ?.split("; ")
+        .find((c: string) => c.startsWith("session="))
+        ?.split("=")[1];
+    }
 
-    if (ctx.user) {
-      // Delete session from database
-      let token: string | undefined;
-      if ("cookies" in ctx.req) {
-        const maybeReq = ctx.req as { cookies?: Record<string, string> };
-        token = maybeReq.cookies?.session;
-      } else {
-        const headers = ctx.req.headers as unknown as { get?: (k: string) => string | null; cookie?: string };
-        const cookieHeader = headers.get?.("cookie") || headers.cookie;
-        token = cookieHeader
-          ?.split("; ")
-          .find((c: string) => c.startsWith("session="))
-          ?.split("=")[1];
-      }
-      if (token) {
+    let sessionDeleted = false;
+    if (token) {
+      // Verify session exists before deletion
+      const existingSession = await db.select().from(sessions).where(eq(sessions.token, token)).get();
+      if (existingSession) {
         await db.delete(sessions).where(eq(sessions.token, token));
         sessionDeleted = true;
       }
@@ -207,10 +228,10 @@ export const authRouter = router({
       (ctx.res as Headers).set("Set-Cookie", `session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
     }
 
-    if (ctx.user && !sessionDeleted) {
+    if (token && !sessionDeleted) {
       return { success: false, message: "Failed to invalidate session" };
     }
 
-    return { success: true, message: ctx.user ? "Logged out successfully" : "No active session" };
+    return { success: true, message: token ? "Logged out successfully" : "No active session" };
   }),
 });

@@ -3,14 +3,9 @@ import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "../trpc";
 import { db } from "@/lib/db";
 import { accounts, transactions } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
-import crypto from "crypto";
-
-function generateAccountNumber(): string {
-  // Use a cryptographically secure random integer for account numbers
-  const n = crypto.randomInt(0, 10_000_000_000);
-  return n.toString().padStart(10, "0");
-}
+import { eq, and, desc } from "drizzle-orm";
+import { EncryptionService } from "../services/encryptionService";
+import { ValidationService } from "../services/validationService";
 
 export const accountRouter = router({
   createAccount: protectedProcedure
@@ -34,14 +29,14 @@ export const accountRouter = router({
         });
       }
 
-      let accountNumber;
+      // Generate unique account number using cryptographically secure generator
+      let accountNumber: string | undefined;
       let isUnique = false;
       let attempts = 0;
       const MAX_ATTEMPTS = 10;
 
-      // Generate unique account number with retry limit
       while (!isUnique && attempts < MAX_ATTEMPTS) {
-        accountNumber = generateAccountNumber();
+        accountNumber = EncryptionService.generateAccountNumber();
         const existing = await db.select().from(accounts).where(eq(accounts.accountNumber, accountNumber)).get();
         isUnique = !existing;
         attempts++;
@@ -93,7 +88,7 @@ export const accountRouter = router({
     .input(
       z.object({
         accountId: z.number(),
-        amount: z.number().positive().min(0.01, { message: "Amount must be at least $0.01" }),
+        amount: z.number().positive().min(0.01, { message: "Amount must be at least $0.01" }).max(10000, { message: "Amount cannot exceed $10,000 per transaction" }),
         fundingSource: z.object({
           type: z.enum(["card", "bank"]),
           accountNumber: z.string(),
@@ -102,7 +97,16 @@ export const accountRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const amount = parseFloat(input.amount.toString());
+      // Validate and sanitize amount using centralized validation
+      const amountValidation = ValidationService.validateAmount(input.amount);
+      if (!amountValidation.valid) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: amountValidation.error || "Invalid amount",
+        });
+      }
+
+      const sanitizedAmount = amountValidation.sanitized;
 
       // Verify account belongs to user
       const account = await db
@@ -125,94 +129,76 @@ export const accountRouter = router({
         });
       }
 
-      // Validate funding source details
+      // Validate funding source using centralized ValidationService
       if (input.fundingSource.type === "bank") {
         if (!input.fundingSource.routingNumber) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Routing number is required for bank transfers" });
         }
-        // Validate routing number format
-        if (!/^\d{9}$/.test(input.fundingSource.routingNumber)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Routing number must be 9 digits" });
+        // Use ValidationService for proper ABA checksum validation
+        if (!ValidationService.validateRoutingNumber(input.fundingSource.routingNumber)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid routing number" });
         }
       }
 
-      // If funding by card, validate card number using Luhn and check card type
       if (input.fundingSource.type === "card") {
-        const digits = input.fundingSource.accountNumber.replace(/\D/g, "");
-
-        // Validate card length (13-19 digits for most cards)
-        if (digits.length < 13 || digits.length > 19) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid card number length" });
-        }
-
-        // Validate card type by prefix
-        const isValidCardType =
-          digits.startsWith("4") ||      // Visa
-          /^5[1-5]/.test(digits) ||      // Mastercard (51-55)
-          /^2[2-7]/.test(digits) ||      // Mastercard (new range 2221-2720)
-          /^3[47]/.test(digits) ||       // American Express (34, 37)
-          /^6(?:011|5)/.test(digits) ||  // Discover (6011, 65)
-          /^35/.test(digits);            // JCB (35)
-
-        if (!isValidCardType) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "Unsupported card type" });
-        }
-
-        // Luhn algorithm validation
-        let sum = 0;
-        let shouldDouble = false;
-        for (let i = digits.length - 1; i >= 0; i--) {
-          let d = parseInt(digits.charAt(i), 10);
-          if (shouldDouble) {
-            d = d * 2;
-            if (d > 9) d = d - 9;
-          }
-          sum += d;
-          shouldDouble = !shouldDouble;
-        }
-        if (sum % 10 !== 0) {
+        // Use centralized card validation with Luhn algorithm and card type detection
+        const cardValidation = ValidationService.validateCardNumber(input.fundingSource.accountNumber);
+        if (!cardValidation.valid) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid card number" });
         }
       }
 
-      // Sanitize description to prevent any HTML injection
-      const sanitizedDescription = `Funding from ${input.fundingSource.type}`.replace(/<[^>]*>/g, "");
+      // Sanitize description to prevent XSS
+      const sanitizedDescription = ValidationService.sanitizeHtml(`Funding from ${input.fundingSource.type}`);
 
-      // Create transaction
+      // Create transaction record
       await db.insert(transactions).values({
         accountId: input.accountId,
         type: "deposit",
-        amount,
+        amount: sanitizedAmount,
         description: sanitizedDescription,
         status: "completed",
         processedAt: new Date().toISOString(),
       });
 
-      // Fetch the most recent transaction for this account
-      const accountTransactions = await db.select().from(transactions).where(eq(transactions.accountId, input.accountId));
-      let transaction: { [k: string]: unknown } | null = null;
-      if (Array.isArray(accountTransactions) && accountTransactions.length > 0) {
-        transaction = accountTransactions.reduce((prev, cur) => {
-          const prevDate = new Date((prev as { createdAt?: string }).createdAt || 0);
-          const curDate = new Date((cur as { createdAt?: string }).createdAt || 0);
-          return prevDate > curDate ? prev : cur;
-        }) as { [k: string]: unknown };
-      }
+      // Fetch the created transaction using proper DB ordering
+      const recentTransactions = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.accountId, input.accountId))
+        .orderBy(desc(transactions.id))
+        .limit(1)
+        .all();
 
-      // Update account balance using SQL to avoid race conditions
-      // Use direct SQL update with increment to ensure atomicity
+      const transaction = recentTransactions[0] ?? null;
+
+      // Calculate balance from ledger (source of truth) instead of read-then-write
+      const allCompleted = await db
+        .select()
+        .from(transactions)
+        .where(and(eq(transactions.accountId, input.accountId), eq(transactions.status, "completed")))
+        .all();
+
+      let newBalance = 0;
+      for (const txn of allCompleted) {
+        if (txn.type === "deposit") {
+          newBalance += txn.amount;
+        } else if (txn.type === "withdrawal") {
+          newBalance -= txn.amount;
+        }
+      }
+      // Round to prevent floating-point precision errors
+      newBalance = Math.round(newBalance * 100) / 100;
+
+      // Update stored balance to match computed balance
       await db
         .update(accounts)
-        .set({
-          balance: account.balance + amount,
-        })
+        .set({ balance: newBalance })
         .where(eq(accounts.id, input.accountId));
-
-      const updatedAccount = await db.select().from(accounts).where(eq(accounts.id, input.accountId)).get();
 
       return {
         transaction,
-        newBalance: updatedAccount?.balance ?? account.balance,
+        newBalance,
       };
     }),
 
@@ -237,22 +223,16 @@ export const accountRouter = router({
         });
       }
 
-      // Fetch all transactions and sort by createdAt descending (newest first)
+      // Use proper DB-level sorting instead of JS sort
       const accountTransactions = await db
         .select()
         .from(transactions)
         .where(eq(transactions.accountId, input.accountId))
+        .orderBy(desc(transactions.createdAt))
         .all();
 
-      // Sort transactions by createdAt in descending order (newest first)
-      const sortedTransactions = accountTransactions.sort((a, b) => {
-        const dateA = new Date(a.createdAt || 0).getTime();
-        const dateB = new Date(b.createdAt || 0).getTime();
-        return dateB - dateA;
-      });
-
       // Enrich transactions with account type (single query, no N+1)
-      const enrichedTransactions = sortedTransactions.map((transaction) => ({
+      const enrichedTransactions = accountTransactions.map((transaction) => ({
         ...transaction,
         accountType: account.accountType,
       }));
